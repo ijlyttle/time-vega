@@ -200,6 +200,10 @@ def describe(x):
     return x
 ```
 
+-----
+
+First, let’s try an ambiguous format:
+
 ``` python
 x = pd.to_datetime('2013-04-05 06:07:08')
 describe(x)
@@ -212,6 +216,15 @@ describe(x)
     ## 
     ## x    datetime64[ns]
     ## dtype: object
+
+This brings a number of things into focus - my apologies for noting
+things that should be evident from reading the documentation.
+
+The first is that what is being stored is the number of nanoseconds from
+an epoch. Because we did not fix a timezone, it seems we are using a
+“local” timezone where this is the number of seconds from an epoch
+defined in that
+timezone.
 
 ``` python
 x = pd.to_datetime('2013-04-05T06:07:08Z').tz_localize('UTC').tz_convert('America/Chicago')
