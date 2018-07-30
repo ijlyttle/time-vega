@@ -12,6 +12,8 @@ Vega/Vega-Lite, as a user, I would like to build a spec using
 timezone-aware (tz-aware) objects so that the rendering of the spec can
 be independent of the timezone of the browser-locale.
 
+## Motivation
+
 Consider this quote from Jake Vanderplas:
 
 > I wouldn’t want to make Pandas output UTC because then, for example,
@@ -41,18 +43,15 @@ the local-timestamp bug.
 I hate to sound absolutist about this, but the only way I have found to
 avoid these bugs is to, as soon as possible after receiving data,
 (figure out the right way to) cast it as UTC and store the Olson (IANA)
-timzone. Whenever I serialize and unserialize the data, I use the
+timezone. Whenever I serialize and unserialize the data, I use the
 ISO-8601 format and find a way to “keep” the timezone handy.
+
+Talk about industrialization, deploying in the wild, and decoupling the
+data from the spec.
 
 Accordingly I would like to see if it is possible to introduce a
 tz-aware workflow into Vega/Vega-Lite, while keeping the existing
-workflows intact (Jake’s existing chart will still work).
-
-``` r
-library("magrittr")
-library("readr")
-library("glue")
-```
+workflows intact (Jake’s existing chart would still work).
 
 ## Time
 
@@ -70,24 +69,38 @@ representation of each language’s time-aware object.
 
 In R, we have a type `POSIXct`, which is timezone-aware. Internally, it
 stores the number of seconds since the UNIX epoch. There is an
-attribute, `tzone`, that may or may not be set (in my opinion, it should
-be set).
+attribute, `tzone`, that may or may not be set (in my workflow, I always
+set it).
+
+``` r
+library("magrittr")
+library("readr")
+library("glue")
+```
 
 First, I’m going to make a helper function to look a little at the
-internals of a given `POSIXct`.
+internals of a given `POSIXct`. This function (and the `describe()`
+functions I create for the other languages) reports the milliseconds in
+deference to JavaScript.
 
 ``` r
 describe <- function(x) {
   
-  as_utc <- x
-  attr(as_utc, "tzone") <- "UTC"
+  tz <- attr(x, "tzone")
   
+  if (identical(tz, "")) {
+    as_utc <- "not defined"
+  } else {
+    as_utc <- x
+    attr(as_utc, "tzone") <- "UTC"    
+  }
+
   str_value <- formatC(as.numeric(x) * 1e3, digits = 13, width = 13)
   
   print(
     glue::glue("UTC time:       {as_utc}"),
     glue::glue("Formatted time: {x}"),
-    glue::glue("Timezone:       {attr(x, 'tzone')}"),
+    glue::glue("Timezone:       {tz}"),
     glue::glue("Milliseconds:   {str_value}")
   )
   
@@ -98,7 +111,7 @@ describe <- function(x) {
 -----
 
 Let’s start with parsing a string into a POSIXct, and not specifying a
-timezone:
+timezone - the naive case:
 
 ``` r
 "2013-04-05 06:00:00" %>%
@@ -106,15 +119,15 @@ timezone:
   describe()
 ```
 
-    ## UTC time:       2013-04-05 11:00:00
+    ## UTC time:       not defined
     ## Formatted time: 2013-04-05 06:00:00
     ## Timezone:       
     ## Milliseconds:   1365159600000
 
 It looks like the system parses this as a local time (I am running this
-from the `"America/Chicago"` timezone), so it is stored as the UTC time
-that corresponds to local time described by the string. Note that R does
-not attach a timezone attribute to the value.
+from the `"America/Chicago"` timezone); its numerical value being UTC
+time that corresponds to local time described by the string. Note that R
+does not attach a timezone attribute to the value.
 
 -----
 
@@ -144,13 +157,15 @@ Let’s give the constructor an ISO-8601 string:
   describe()
 ```
 
-    ## UTC time:       2013-04-05 05:00:00
+    ## UTC time:       not defined
     ## Formatted time: 2013-04-05
     ## Timezone:       
     ## Milliseconds:   1365138000000
 
 This is not good. Not good at all. It is using the system time and has
-choked on the `"T"` in the string.
+choked on the `"T"` in the string. We can use the `format` argument in
+this case, but we would like to to use a tool that recognizes ISO
+strings natively.
 
 -----
 
@@ -172,8 +187,7 @@ Here, we recognize the ISO-8601 string, and it sets the timezone to
 
 -----
 
-Let’s back up to see what happens in the “floating” case: ambiguous
-format and no-timezone:
+Let’s back up to see what happens in the naive case:
 
 ``` r
 "2013-04-05 06:00:00" %>%
@@ -223,7 +237,7 @@ What if the string is already implies the localization to be UTC?
     ## Milliseconds:   1365141600000
 
 In this case, the parser localized to `"UTC"`, then (again using Pandas’
-vocabulary) converts to `"America/Chicago"`.
+vocabulary) converted to `"America/Chicago"`.
 
 -----
 
@@ -260,11 +274,17 @@ Jake’s lead:
 > That way people could choose UTC or not within Python, and everything
 > else should just flow from there.
 
-I’ll start with a Python version of my `describe()` function.
-
 ``` python
 # Python
 import pandas as pd
+```
+
+I’ll start with a Python version of my `describe()` function. I’m also
+adding some information about how Pandas views the timestamp, given
+Jake’s distinction between `datetime[ns]` and `datetime[ns, utc]`.
+
+``` python
+# Python
 def describe(x):
     if x.tzinfo is None:
       utc_time = 'not defined'
@@ -282,7 +302,7 @@ def describe(x):
 
 -----
 
-First, let’s try an ambiguous format:
+First, let’s try a naive format:
 
 ``` python
 # Python
@@ -298,18 +318,9 @@ describe(x)
     ## x    datetime64[ns]
     ## dtype: object
 
-This brings a number of things into focus - my apologies for noting
-things that should be evident from reading the documentation.
-
-The first is that what is being stored is the number of nanoseconds from
-an epoch. Because we did not fix a timezone, it seems we are using a
-“local” timezone where this is the number of seconds from an epoch
-defined in that timezone.
-
-The internal representation is different from R (`as.POSIXct()`) for
-this case where the timezone is not specified and the format is
-ambiguous. This internal representation is equivalent to that using R
-(`readr::parse_datetime()`).
+Because we did not fix a timezone, it seems we are using a “local”
+timezone where this is the number of seconds from an epoch defined in
+that timezone - similar to what happens in R for the naive case.
 
 -----
 
@@ -352,7 +363,7 @@ describe(x)
 
 Here, the object is not localized to UTC. As an aside, this seems like
 an opportunity - but how strings are parsed into Python is outside of
-this scope. Here, the scope is to understand, not to proscribe.
+this scope.
 
 -----
 
@@ -409,8 +420,8 @@ library("reticulate")
 pd <- import("pandas")
 ```
 
-Our principal way of sending data back and forth is to use a R data
-frame, which reticulate converts to a Pandas Data Frame.
+This is a bit of a detour - it is not essential to the Vega story;
+rather it is interesting only to the R “altair” story.
 
 Let’s create a data frame, using a localized time-stamp:
 
@@ -452,13 +463,14 @@ describe(r.df_r_to_py.x[0])
     ## dtype: object
 
 We see that the numerical representation has been “preserved”, but that
-the localization has not been brought over. I will file an issue with
+the localization has not been brought over. I have filed an
+[issue](https://github.com/rstudio/reticulate/issues/325) with
 **reticulate** to see if this is the intended behavior (or if it could
 be).
 
 -----
 
-Let’s create a Pandas Data Frame with a localized timestamp:
+Let’s copy the Pandas Data Frame, and provide the copy with a timezone:
 
 ``` python
 # Python
@@ -475,16 +487,10 @@ describe(df_py_to_r.x[0])
     ## x    datetime64[ns, America/Chicago]
     ## dtype: object
 
-So far, go good.
-
-As an idea, if an R data frame has a column of class `"POSIXct"`, and
-the `"tzone"` attribute is set, perhaps **reticulate** could localize
-the Python timestamp to `"UTC"` then convert it using the value of
-`tzone`.
-
 -----
 
-Let’s look at this in R:
+Let’s look at this new copy in R, to see if the newly-added timezone
+survives the trip:
 
 ``` r
 df_return <- py$df_py_to_r
@@ -519,38 +525,33 @@ accordingly.
 
 ### JavaScript
 
-Something I would like clarified: how [data
-format](https://vega.github.io/vega-lite/docs/data.html#format) works in
-Vega-Lite vs. Vega. For example, the documention implies that
-JavaScript’s `Date.parse()` is used in
-[Vega-Lite](https://vega.github.io/vega-lite/docs/data.html#format), but
-not in [Vega](https://vega.github.io/vega/docs/data/#format). Is this
-true or is this an omission the Vega documentation?
-
 In this section, I will repeat the same exercise in JavaScript, focusing
 on how `Date.parse()` works and looking at how the **moment.js** library
 (plus friends) works.
 
-First, let’s create a V8 session:
+There are a couple of points that are not quite clear in my head:
+
+  - How [data
+    format](https://vega.github.io/vega-lite/docs/data.html#format)
+    works in Vega-Lite vs. Vega. For example, the documention implies
+    that JavaScript’s `Date.parse()` is used in
+    [Vega-Lite](https://vega.github.io/vega-lite/docs/data.html#format),
+    but not in [Vega](https://vega.github.io/vega/docs/data/#format). Is
+    this true or is this an omission the Vega documentation?
+
+  - The JavaScript class is called `Date` - however seems to function as
+    a “datetime”. Am I thinking about this correctly?
+
+We start our investigation by creating a V8 session:
 
 ``` r
 library("V8")
 ct <- v8()
 ```
 
-Next, let’s look at how `Date.parse()` works:
+-----
 
-``` r
-ct$eval("var i = Date.parse('2013-04-05T06:00:00Z').toString();")
-
-ct$get("i")
-```
-
-    ## [1] "1365141600000"
-
-We see here that `Date.parse()` seems to have recognized the
-ISO-formatted string and parsed this to the number of milliseconds since
-the UNIX epoch. This number is equivalent to localizing to `'UTC'`.
+Let’s start by parsing a naive string:
 
 ``` r
 ct$eval("var i = Date.parse('2013-04-05 06:00:00').toString();")
@@ -560,10 +561,33 @@ ct$get("i")
 
     ## [1] "1365159600000"
 
-We see here that `Date.parse()` seems to have recognized the
-ISO-formatted string and parsed this to the number of milliseconds since
-the UNIX epoch for the wall-clock time in my system’s timezone. This
-number is equivalent to localizing to the system timezone.
+We are working only with the number of milliseconds - here we localize
+using the system.
+
+`Date.parse()` seems to have recognized this as a non-ISO-formatted
+string and parsed this to the number of milliseconds since the UNIX
+epoch for the wall-clock time in my system’s timezone. This is
+consistent with the naive case in R and Python.
+
+-----
+
+Next, let’s look at an ISO-formatted string:
+
+``` r
+ct$eval("var i = Date.parse('2013-04-05T06:00:00Z').toString();")
+
+ct$get("i")
+```
+
+    ## [1] "1365141600000"
+
+Here we localize to UTC.
+
+`Date.parse()` seems to have recognized the ISO-formatted string and
+parsed this to the number of milliseconds since the UNIX epoch. This in
+consistent with the `readr::parse_datetime()`
+
+-----
 
 -----
 
