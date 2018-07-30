@@ -7,7 +7,46 @@ that this can, with enough consideration and revision, serve as a
 foundation for efforts to improve the time-handling capabilities of Vega
 and Vega-Lite.
 
-We want a way to render a spec independent of the browser-locale.
+In essence, I want to find a way to support timezone-aware objects in
+Vega/Vega-Lite, as a user, I would like to build a spec using
+timezone-aware (tz-aware) objects so that the rendering of the spec can
+be independent of the timezone of the browser-locale.
+
+Consider this quote from Jake Vanderplas:
+
+> I wouldn’t want to make Pandas output UTC because then, for example,
+> if I make a chart in Seattle and send it to a friend in NYC the
+> rendering will be different.
+
+I understand Jake’s motivation here and appreciate his solution. If I
+can borrow Jake’s example, I would like that he be able to build that
+chart using tz-aware objects (perhaps using the `"America/Los_Angeles"`
+timezone), and that the chart would render the scales and aggregations
+using the `"America/Los_Angeles"` timezone regardless of the system
+settings of the browser in which it is rendered. In essence, another
+solution for the Seattle/New York problem.
+
+“But Jake *has* a solution already,” you might reasonably respond.
+Having gone through this exercise to (try to) understand tz-naive and
+tz-aware objects, I see that importing timestamps as local-time and
+treating them as tz-naive solves 99% of the problem; I have come to
+appreciate that.
+
+However, there is a problem, twice a year with daylight-saving time. In
+my experience, every so often I will get strange behaviors when working
+with time-based data. If I get funny things happening in March and
+November, I will retrace my steps and find that I have been bitten by
+the local-timestamp bug.
+
+I hate to sound absolutist about this, but the only way I have found to
+avoid these bugs is to, as soon as possible after receiving data,
+(figure out the right way to) cast it as UTC and store the Olson (IANA)
+timzone. Whenever I serialize and unserialize the data, I use the
+ISO-8601 format and find a way to “keep” the timezone handy.
+
+Accordingly I would like to see if it is possible to introduce a
+tz-aware workflow into Vega/Vega-Lite, while keeping the existing
+workflows intact (Jake’s existing chart will still work).
 
 ``` r
 library("magrittr")
@@ -17,28 +56,15 @@ library("glue")
 
 ## Time
 
-The first thing I want to sort out is how time is handled in R and
-Python. I think this is a useful prelimanary exercise because chances
-are that a Vega/Vega-Lite spec is giong to be built using R or Python.
+The first thing I want to sort out is how time is handled in R, Python,
+and JavaScript. I think this is a useful prelimanary exercise because
+chances are that a Vega/Vega-Lite spec is giong to be built using R or
+Python.
 
 I think it can also be useful so we can understand, a bit better, each
-other languages. In that spirit, here are three helper functions so that
-I can bring each language’s internal representation to a common
-scale-factor, milliseconds.
-
-``` r
-js_ms <- function(x) {
-  as.numeric(x)
-}
-
-py_ms <- function(x) {
-  as.numeric(x) / 1.e6
-}
-
-r_ms <- function(x){
-  as.numeric(x) * 1.e3
-}
-```
+others’ languages. To make comparisons, I have written a function in
+each language, called `describe()`, to help show the internal
+representation of each language’s time-aware object.
 
 ### R
 
@@ -56,7 +82,7 @@ describe <- function(x) {
   as_utc <- x
   attr(as_utc, "tzone") <- "UTC"
   
-  str_value <- formatC(r_ms(x), digits = 13, width = 13)
+  str_value <- formatC(as.numeric(x) * 1e3, digits = 13, width = 13)
   
   print(
     glue::glue("UTC time:       {as_utc}"),
@@ -552,10 +578,10 @@ no localization information.
 #### moment.js
 
 As a crazy idea, let’s work a little with **moment.js** and imagine how
-it might be incorporated into the Vega
-framework.
+it might be incorporated into the Vega framework.
 
 ``` r
+# loading the moment libraries
 ct$source("https://cdnjs.cloudflare.com/ajax/libs/moment.js/2.22.2/moment.min.js")
 ```
 
@@ -665,6 +691,7 @@ milliseconds from the UNIX epoch? If we are to associate a timezone with
 a datetime in the parsing, it would seem to require its own type. Maybe
 this one of reasons behind [this
 comment](https://github.com/vega/vega-lite/issues/4044#issuecomment-406023278).
+Is a Vega `"date"` what I think of as a datetime?
 
 In efforts to decouple the data from the visualization specification, it
 becomes our responsibility to provide both the serialized dataframe
