@@ -80,7 +80,7 @@ Let's start with parsing a string into a POSIXct, and not specifying a timezone 
   describe()
 ```
 
-It looks like the system parses this as a local time (I am running this from the `"America/Chicago"` timezone); its numerical value being UTC time that corresponds to local time described by the string. Note that R does not attach a timezone attribute to the value.
+The numerical value corresponds to UTC value for the string parsed using the system's timezone (in my case `"America/Chicago"`). There is no time-zone assigned.
 
 ---
 
@@ -92,7 +92,7 @@ Next, let's specify the timezone to the constructor:
   describe()
 ```
 
-This makes sense, and is repeatable; it does not depend on my system settings.
+The numerical value corresponds to UTC value for the string parsed using the UTC timezone; the time-zone is assigned as expected. Using Pandas' vocabulary, we have localized to `"UTC"`.
 
 ---
 
@@ -104,7 +104,9 @@ Let's give the constructor an ISO-8601 string:
   describe()
 ```
 
-This is not good. Not good at all. It is using the system time and has choked on the `"T"` in the string. We can use the `format` argument in this case, but we would like to to use a tool that recognizes ISO strings natively.
+This is not good. Not good at all. It is using the system time and has choked on the `"T"` in the string. 
+
+To fix this, we can use the `format` argument, but we would like to to use a tool that recognizes ISO strings natively.
 
 ---
 
@@ -116,7 +118,7 @@ Luckily we have an alternative, the `readr::parse_datetime()` function.
   describe()
 ```
 
-Here, we recognize the ISO-8601 string, and it sets the timezone to `"UTC"`. Using Pandas' vocabulary, we have localized to `"UTC"`.
+Here, it has recognized the ISO-8601 string; the numerical value corresponds to UTC value for the string parsed using the UTC timezone, it has localized to `"UTC"`. 
 
 ---
 
@@ -128,7 +130,7 @@ Let's back up to see what happens in the naive case:
   describe()
 ```
 
-Here, Hadley assumes that the timezone is UTC and sets it so as to remove any downstream ambiguity (this does not seem a surprise).
+This is slightly different behavior than the naive case for `as.POSIXct()`. The function *will* perform a localization, and uses `"UTC"` as its default.
 
 ---
 
@@ -140,7 +142,7 @@ When parsing, we can set a timezone:
   describe()
 ```
 
-If the format is ambiguous (no `"Z"` or `"+00:00"` at the end), the parser localizes to the timezone provided.
+If the format is naive (non-ISO), the parser localizes to the timezone provided.
 
 ---
 
@@ -213,7 +215,7 @@ x = pd.to_datetime('2013-04-05 06:00:00')
 describe(x)
 ```
 
-Because we did not fix a timezone, it seems we are using a "local" timezone where this is the number of seconds from an epoch defined in that timezone - similar to what happens in R for the naive case.
+For the naive case, `to_datetime()` parses this using as if the timezone were `"UTC"`, but the timezone is not set. This gives a differnent value than the naive case in R for `as.POSIXct()`.
 
 ---
 
@@ -367,10 +369,10 @@ ct$eval("var i = Date.parse('2013-04-05 06:00:00').toString();")
 ct$get("i")
 ```
 
-We are working only with the number of milliseconds - here we localize using the system.
+`Date.parse()` seems to have recognized this as a non-ISO-formatted string, returning the number of milliseconds since the UNIX epoch for the string evaluated in the timezone of my computer. This seems consistent with naive case for `as.POSIXct()` in R, but has uses a different internal representation than the naive case for `pd.to_datetime()` in Python. 
 
-`Date.parse()` seems to have recognized this as a non-ISO-formatted string and parsed this to the number of milliseconds since the UNIX epoch for the wall-clock time in my system's timezone. This is consistent with the naive case in R and Python.
-
+As an aside, we should not be concerned with differences in internal represetation for the naive case because we will alawys be sending datetime strings to Vega/Vega-Lite. For the timezone-aware cases, we should expect the internal representations to be consistent because they are describing the same instants in time.
+ 
 ---
 
 Next, let's look at an ISO-formatted string:
@@ -381,26 +383,22 @@ ct$eval("var i = Date.parse('2013-04-05T06:00:00Z').toString();")
 ct$get("i")
 ```
 
-Here we localize to UTC.
-
-`Date.parse()` seems to have recognized the ISO-formatted string and parsed this to the number of milliseconds since the UNIX epoch. This in consistent with the `readr::parse_datetime()`
+`Date.parse()` seems to have recognized the ISO-formatted string and parsed this to the number of milliseconds since the UNIX epoch. This is consistent with the value for `readr::parse_datetime()` and for `pd.to_datetime()`
 
 ---
 
-
----
-
-Within the Vega context, perhaps all that `Date.parse()` does is to parse the string into a "number of milliseconds", then it becomes Vega's responsibility to interpret that number, either as a local time, UTC time, or potentially as a *localized* time.
+Within the Vega context, perhaps the responsibility of `Date.parse()` is to parse the string into a "number of milliseconds", then it becomes Vega's responsibility to interpret that number, either as a local time, UTC time, according to scale or time-unit directives.
 
 We should also note that `Date.Parse()` returns a number only - there is no localization information.
 
 #### moment.js
 
-As a crazy idea, let's work a little with **moment.js** and imagine how it might be incorporated into the Vega framework.
+As a first idea, let's work a little with **moment.js**.
 
 ```{r js-moment-setup}
 # loading the moment libraries
 ct$source("https://cdnjs.cloudflare.com/ajax/libs/moment.js/2.22.2/moment.min.js")
+ct$source("https://cdn.jsdelivr.net/npm/moment-strftime@0.3.2/lib/moment-strftime.min.js")
 ct$source("https://cdnjs.cloudflare.com/ajax/libs/moment-timezone/0.5.21/moment-timezone-with-data.min.js")
 ```
 
@@ -417,13 +415,16 @@ ct$assign("describe", JS("
 "))
 ```
 
+---
+
+Like before, we start with the naive case:
 
 ```{r js-moment-naive}
 ct$assign("a", JS("moment('2013-04-05 06:00:00')"))
 ct$eval("describe(a)")
 ```
 
-Moment gives the same number of milliseconds as using `Date.parse()`.
+Moment gives the same number of milliseconds as using `Date.parse()`, having parsed the string in the context of the system's timezone.
 
 ---
 
@@ -432,14 +433,18 @@ ct$assign("a", JS("moment('2013-04-05T06:00:00Z')"))
 ct$eval("describe(a)")
 ```
 
-Moment gives the same number of milliseconds as using `Date.parse()`.
+Moment gives the same number of milliseconds as using `Date.parse()`, having recognized this as an ISO string.
 
 ---
+
+Let's try these again, this time using the `moment.tz()` function to attach a timezone.
 
 ```{r js-moment-naive-localize}
 ct$assign("a", JS("moment.tz('2013-04-05 06:00:00', 'America/Chicago')"))
 ct$eval("describe(a)")
 ```
+
+This seems equivalent to localizing to `"America/Chicago"`.
 
 ---
 
@@ -448,26 +453,37 @@ ct$assign("a", JS("moment.tz('2013-04-05T06:00:00Z', 'America/Chicago')"))
 ct$eval("describe(a)")
 ```
 
----
-
-## Intake
-
-Jake VanderPlas:
-
-> I wouldn't want to make Pandas output UTC because then, for example, if I make a chart in Seattle and send it to a friend in NYC the rendering will be different.
-
-For me, the takeaway is that we want a consistent rendering regardless of where a chart is rendered, and to support and document how to do just that.
+The ISO string seems to have the effect of localizing to `"UTC"`; it then converts to the provided timezone. 
 
 
-Look to https://github.com/altair-viz/altair/pull/1053 for how Jake uses timezones. 
+## Possible way forward
 
-Also, look to https://github.com/altair-viz/altair/pull/1053#issuecomment-408610839 for the problem of browser location. (Earlier Jake comment)
+I'd like to propose that Vega/Vega-Lite be able to handle tz-aware dates. 
 
-It can be useful to have a slightly different interpretation of date vs. datetime.
+This would support a workflow where a user in R or in Python could work with tz-aware types, as detailed above, then serialize the data to a specification using an ISO-8601 format for datetimes. Of course, we would need to be able to specify the timezone associated with a given column of data. 
 
-The timezone should be an attribute of the data itself. It should be available at the top level: see https://github.com/vega/vega-lite/issues/4004
+What follows is very presumptuous on my part, and almost assuredly overestimates my knowledge of JavaScript in general, and Vega/Vega-Lite in particular.
 
-Vega can parse to `"boolean"`, `"date"`, `"number"` or `"string"`. So, in Vega, is a datetime just a number that represents the number of milliseconds from the UNIX epoch? If we are to associate a timezone with a datetime in the parsing, it would seem to require its own type. Maybe this one of reasons behind [this comment](https://github.com/vega/vega-lite/issues/4044#issuecomment-406023278). Is a Vega `"date"` what I think of as a datetime?
+Let me sketch something out using moment.js - I do not insist that moment.js is the way to go, I am using it only as an example to flesh out some ideas. 
 
-In efforts to decouple the data from the visualization specification, it becomes our responsibility to provide both the serialized dataframe (csv, json, etc.) and the parsing specification (timezones).
- 
+For the purpose of this discussion, let's assume that moment.js and moment-timezone-with-data.js are incorpoated into Vega. 
+
+For Vega and Vega-Lite, I think that the timzone information would have to be part of the format-parse part of the spec. Perhaps the presence of a `"tz"` field could signify to Vega/Vega-Lite that, internally, this is a `moment` rather than a `Date`. 
+
+```json
+{"parse": {"foo": {"date": {"tz": "America/New_York"}}}}
+```
+
+Putting this information in the format-parse section brings up a few issues:
+
+- I think there is a way for Altair to follow along (for Jake to validate). If a `dtype` is `datetime64[ns, <tz>]` where `<tz>` is not `UTC`, then it could write to the format-parse part of the spec.
+
+- This might serve as a motivator to bring the format to the top-level of Vega-Lite datasets, so that the timezone can be defined exactly once ([issue](https://github.com/vega/vega-lite/issues/4004)). For me, this could be especially useful because I would like to design visualization-specifications where you can "just add data" (I suspect that we all want to do this). In my case, I would like to be able to drop in the serialized data alongside the timezones in one convenient place.
+
+- In the case of moment, the parser uses a different vocabulary than d3-time-format. Given that d3-time-format is modeled on strftime, perhaps the moment-strftime library can be of use, or maybe we could write our own translator to conform exactly to d3-time-format (or as close as we can).
+
+The next place I would see a need to adapt would be with the scales in Vega. I am guessing that when Vega builds a temporal scale, it interacts with d3-time. Presumably, moment could provide similar information from its object.
+
+Finally, in Vega-Lite, there are Time Units, referred-to in both Transform and Encoding. Because the documentation points to the same page, I assume that the implementation is the same for both. If you are dealing with a moment object, presumably moment can be made to work with these time units: `"year"`, `"yearquarter"`, `"yearquartermonth"`, etc.
+
+
