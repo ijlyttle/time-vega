@@ -359,17 +359,37 @@ library("V8")
 ct <- v8()
 ```
 
+```{r}
+describe_js <- JS("
+  function(x) {
+    console.log('UTC time:       ', x.toISOString());
+    console.log('Formatted time: ', x);
+    var has_tz = typeof x.getTimezone === 'function'
+    if (has_tz) {
+      console.log('Timezone:       ', x.getTimezone());
+    } else {
+      console.log('Offset  :       ', x.getTimezoneOffset());
+    }
+    console.log('Milliseconds:   ', x.getTime());
+  }
+")
+```
+
+```{r js-describe-date}
+ct$assign("describe", describe_js)
+```
+
 ---
 
 Let's start by parsing a naive string:
 
 ```{r js-dateparse-naive}
-ct$eval("var i = Date.parse('2013-04-05 06:00:00').toString();")
+ct$assign("i", JS("new Date('2013-04-05 06:00:00')"))
 
-ct$get("i")
+ct$eval("describe(i)")
 ```
 
-`Date.parse()` seems to have recognized this as a non-ISO-formatted string, returning the number of milliseconds since the UNIX epoch for the string evaluated in the timezone of my computer. This seems consistent with naive case for `as.POSIXct()` in R, but has uses a different internal representation than the naive case for `pd.to_datetime()` in Python. 
+`Date` seems to have recognized this as a non-ISO-formatted string, returning the number of milliseconds since the UNIX epoch for the string evaluated in the timezone of my computer. This seems consistent with naive case for `as.POSIXct()` in R, but has uses a different internal representation than the naive case for `pd.to_datetime()` in Python. 
 
 As an aside, we should not be concerned with differences in internal represetation for the naive case because we will alawys be sending datetime strings to Vega/Vega-Lite. For the timezone-aware cases, we should expect the internal representations to be consistent because they are describing the same instants in time.
  
@@ -378,9 +398,9 @@ As an aside, we should not be concerned with differences in internal represetati
 Next, let's look at an ISO-formatted string:
 
 ```{r js-dateparse-iso}
-ct$eval("var i = Date.parse('2013-04-05T06:00:00Z').toString();")
+ct$assign("i", JS("new Date('2013-04-05T06:00:00Z')"))
 
-ct$get("i")
+ct$eval("describe(i)")
 ```
 
 `Date.parse()` seems to have recognized the ISO-formatted string and parsed this to the number of milliseconds since the UNIX epoch. This is consistent with the value for `readr::parse_datetime()` and for `pd.to_datetime()`
@@ -405,7 +425,7 @@ ct$source("https://cdnjs.cloudflare.com/ajax/libs/moment-timezone/0.5.21/moment-
 Let's design a describe function using momentjs.
 
 ```{r js-moment-describe}
-ct$assign("describe", JS("
+ct$assign("describe_moment", JS("
   function(x) {
     console.log('UTC time:       ', x.clone().tz('UTC').format());
     console.log('Formatted time: ', x.format());
@@ -421,7 +441,7 @@ Like before, we start with the naive case:
 
 ```{r js-moment-naive}
 ct$assign("a", JS("moment('2013-04-05 06:00:00')"))
-ct$eval("describe(a)")
+ct$eval("describe_moment(a)")
 ```
 
 Moment gives the same number of milliseconds as using `Date.parse()`, having parsed the string in the context of the system's timezone.
@@ -430,7 +450,7 @@ Moment gives the same number of milliseconds as using `Date.parse()`, having par
 
 ```{r js-moment-iso}
 ct$assign("a", JS("moment('2013-04-05T06:00:00Z')"))
-ct$eval("describe(a)")
+ct$eval("describe_moment(a)")
 ```
 
 Moment gives the same number of milliseconds as using `Date.parse()`, having recognized this as an ISO string.
@@ -441,7 +461,7 @@ Let's try these again, this time using the `moment.tz()` function to attach a ti
 
 ```{r js-moment-naive-localize}
 ct$assign("a", JS("moment.tz('2013-04-05 06:00:00', 'America/Chicago')"))
-ct$eval("describe(a)")
+ct$eval("describe_moment(a)")
 ```
 
 This seems equivalent to localizing to `"America/Chicago"`.
@@ -450,7 +470,7 @@ This seems equivalent to localizing to `"America/Chicago"`.
 
 ```{r js-moment-iso-localize}
 ct$assign("a", JS("moment.tz('2013-04-05T06:00:00Z', 'America/Chicago')"))
-ct$eval("describe(a)")
+ct$eval("describe_moment(a)")
 ```
 
 The ISO string seems to have the effect of localizing to `"UTC"`; it then converts to the provided timezone. 
@@ -463,6 +483,14 @@ I'd like to propose that Vega/Vega-Lite be able to handle tz-aware dates.
 This would support a workflow where a user in R or in Python could work with tz-aware types, as detailed above, then serialize the data to a specification using an ISO-8601 format for datetimes. Of course, we would need to be able to specify the timezone associated with a given column of data. 
 
 What follows is very presumptuous on my part, and almost assuredly overestimates my knowledge of JavaScript in general, and Vega/Vega-Lite in particular.
+
+### False start using moment
+
+I started down this path then started thinking it could get messy to implement. I think the suggestion to modify the Vega/Vega-Lite API to specify the timezone in the parsing is OK, and I think (hope) I have captured the parts of the implementation this change would affect. 
+
+Where things got messy was trying to image how this might be implemented. I will leave my original thinking here, for posterity.
+
+---
 
 Let me sketch something out using moment.js - I do not insist that moment.js is the way to go, I am using it only as an example to flesh out some ideas. 
 
@@ -486,4 +514,52 @@ The next place I would see a need to adapt would be with the scales in Vega. I a
 
 Finally, in Vega-Lite, there are Time Units, referred-to in both Transform and Encoding. Because the documentation points to the same page, I assume that the implementation is the same for both. If you are dealing with a moment object, presumably moment can be made to work with these time units: `"year"`, `"yearquarter"`, `"yearquartermonth"`, etc.
 
+### Possible way forward using timezone-js and tzdata
+
+I ran into trouble imagining how this would be implemented because of how dependent everything time-related is on the d3-time and d3-time-format libraries. I have no wish to try to re-implement what is already done in those libraries.
+
+After much googling and pacing, I arrived at the thought - if only the `Date` object were tz-aware - this thought solidified when I came across the timezone-js library that provides a tz-aware dropin for `Date`. If such an object could be supplied to the d3 functions, and if the right thing were to happen, this could be a minimally-disruptive solution.
+
+What would be needed here are [timezone-js](https://github.com/mde/timezone-js) (uses Apache License according to README, but does not contain a LICENSE file) and [tzdata](https://github.com/rogierschouten/tzdata-generate/) (MIT license), both available on npm.
+
+What timezone-js claims to provide is a dropin for `Date`, such that all the getters and setters have the same API as `Date`, with the exception of the consructor, which as an optional argument for timezone.
+
+Let's see what we can get this to do:
+
+```{r}
+# new js session
+ct_tz <- V8::v8()
+
+# load the JS
+ct_tz$source("https://cdn.jsdelivr.net/npm/timezone-js@0.4.13/src/date.min.js")
+ct_tz$source("https://cdn.jsdelivr.net/npm/tzdata@1.0.11/tzdata.js")
+
+# tell timezone-js to load the entire database
+ct_tz$assign("_tz", JS("timezoneJS.timezone"))
+ct_tz$eval("_tz.loadingScheme = _tz.loadingSchemes.MANUAL_LOAD")
+ct_tz$eval("_tz.loadZoneDataFromObject(tzdata)")
+```
+
+Let's make another version of our `describe()` function:
+
+```{r js-tz-describe}
+ct_tz$assign("describe", describe_js)
+```
+
+```{r}
+ct_tz$assign("tmp", JS("new timezoneJS.Date('2013-04-05')"))
+ct_tz$eval("describe(tmp)")
+```
+
+Will d3-time and d3-time-format work well with a dropin?
+
+What are the problems with the timezone-js?
+
+Are these alleviated by using timezone-complete?
+
+
+```{python}
+name = "Ian"
+print(f"Hi, my name is {name}.")
+```
 

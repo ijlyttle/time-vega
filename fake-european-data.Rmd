@@ -1,0 +1,68 @@
+---
+title: "Fake European Data"
+output: github_document
+---
+
+```{r}
+library("here")
+library("readr")
+library("dplyr")
+library("ggplot2")
+library("lubridate")
+```
+
+The purpose of this document is to manufacture a 15-minute time-series that spans two-years, 2015-2016, in the context of the `"Europe/Paris"` timezone. By using such a time series, I will have a way to do calclulations in Vega, while checking them in R.
+
+```{r}
+tz_local <- "Europe/Paris"
+
+t_mean <- 10.0
+dt_day <- 7.5
+dt_year <- 10.0
+
+dtm_ref <- parse_datetime("2015-01-01 00:00:00", locale = locale(tz = tz_local))
+per_day <- ddays(1)
+per_year <- ddays(365.25)
+```
+
+To give us a little structure, our fake time-series will have daily variation and yearly variation. Let's imagine that this is a temperature, in °C (this *is* Europe). Our mean temperature will be `r t_mean` °C, with a daily variation (above and below the daily mean) of `r dt_day` °C, and a yearly variation of `dt_year` °C. The coldest intstant of the year is at midnight January 1st. The daily period is 24 hours; the yearly period is 365.25 (24-hour) days.
+
+```{r}
+n_obs <- ((dtm_ref + years(2)) - dtm_ref) / dminutes(15)
+
+fake_temperature_paris <- 
+  tibble(
+    instant = dtm_ref + seq(0, n_obs - 1)*dminutes(15),
+    temperature = 
+      t_mean - 
+      dt_day * cos(2 * pi * (instant - dtm_ref)/per_day) - 
+      dt_year * cos(2 * pi * (instant - dtm_ref)/per_year)  
+  )
+```
+
+```{r}
+make_plot <- function(df) {
+  ggplot(df, aes_string(x = "instant", y = "temperature")) +
+  geom_line()  
+}
+
+fake_temperature_paris %>%
+  make_plot()
+```
+
+```{r}
+fake_temperature_paris %>%
+  filter(year(instant) == 2015, month(instant) == 1) %>%
+  make_plot()
+```
+
+So this looks about right...
+
+Let's write our data out to a csv file:
+
+```{r}
+write_csv(
+  fake_temperature_paris, 
+  here("docs", "data", "fake_temperature_paris.csv")
+)
+```
